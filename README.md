@@ -24,7 +24,7 @@ git am --signoff < new_opcode.patch
 После, следуя инструкциям Python собрать исходный код:
 ```sh
 ./configure
-make
+make -j2
 ```
 При успешной сборке, в каталоге появится исполняемый файл `python`
 
