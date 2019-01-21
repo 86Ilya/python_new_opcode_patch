@@ -1,0 +1,116 @@
+From d4b6df8d7c8cb121b0e4c367bf6e326c5bf77d13 Mon Sep 17 00:00:00 2001
+From: ILYA <ilya.aurov@gmail.com>
+Date: Mon, 21 Jan 2019 10:07:58 +0300
+Subject: [PATCH] =?UTF-8?q?=D0=94=D0=BE=D0=B1=D0=B0=D0=B2=D0=B8=D0=BB=20?=
+ =?UTF-8?q?=D0=BD=D0=BE=D0=B2=D1=8B=D0=B9=20opcode=20-=20"LOAD=5FOTUS".=20?=
+ =?UTF-8?q?=D0=9A=D0=BE=D1=82=D0=BE=D1=80=D1=8B=D0=B9=20=D1=8F=D0=B2=D0=BB?=
+ =?UTF-8?q?=D1=8F=D0=B5=D1=82=D1=81=D1=8F=20=D0=BE=D0=BF=D1=82=D0=B8=D0=BC?=
+ =?UTF-8?q?=D0=B8=D0=B7=D0=B0=D1=86=D0=B8=D0=B5=D0=B9=20=D0=B4=D0=B2=D1=83?=
+ =?UTF-8?q?=D1=85=20=D0=BA=D0=BE=D0=B4=D0=BE=D0=B2:=20LOAD=5FFAST=200=20LO?=
+ =?UTF-8?q?AD=5FCONST=20arg?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ Include/opcode.h        |  1 +
+ Lib/opcode.py           |  1 +
+ Python/ceval.c          | 21 +++++++++++++++++++++
+ Python/opcode_targets.h |  2 +-
+ Python/peephole.c       | 11 +++++++++++
+ 5 files changed, 35 insertions(+), 1 deletion(-)
+
+diff --git a/Include/opcode.h b/Include/opcode.h
+index 9ed548729e..4f337050ed 100644
+--- a/Include/opcode.h
++++ b/Include/opcode.h
+@@ -158,6 +158,7 @@ extern "C" {
+ 
+ #define SET_ADD         146
+ #define MAP_ADD         147
++#define LOAD_OTUS       148
+ 
+ 
+ enum cmp_op {PyCmp_LT=Py_LT, PyCmp_LE=Py_LE, PyCmp_EQ=Py_EQ, PyCmp_NE=Py_NE, PyCmp_GT=Py_GT, PyCmp_GE=Py_GE,
+diff --git a/Lib/opcode.py b/Lib/opcode.py
+index e403365b6a..d2a1229f13 100644
+--- a/Lib/opcode.py
++++ b/Lib/opcode.py
+@@ -188,5 +188,6 @@ def_op('EXTENDED_ARG', 145)
+ EXTENDED_ARG = 145
+ def_op('SET_ADD', 146)
+ def_op('MAP_ADD', 147)
++def_op('LOAD_OTUS', 148)
+ 
+ del def_op, name_op, jrel_op, jabs_op
+diff --git a/Python/ceval.c b/Python/ceval.c
+index e1140a8e40..63e4866246 100644
+--- a/Python/ceval.c
++++ b/Python/ceval.c
+@@ -1243,7 +1243,28 @@ PyEval_EvalFrameEx(PyFrameObject *f, int throwflag)
+             PUSH(x);
+             FAST_DISPATCH();
+         }
++        TARGET(LOAD_OTUS)
++        {
++            // LOAD_OTUS состоит из двух инструкций. У первой LOAD_FAST аргумент всегда 0.
++            // У второй LOAD_CONST есть свой аргумент
++            x = GETLOCAL(0);
++            if (x != NULL) {
++                Py_INCREF(x);
++                PUSH(x);
++                // Нашли 0, увеличили счётчик ссылок, добавили ссылку на него из "local co_varnames" в стек
++                x = GETITEM(consts, oparg);
++                // Теперь взяли "реальный" аргумент и добавили ссылку из co_consts в стек
++                Py_INCREF(x);
++                PUSH(x);
++                // Переходим к следующему опкоду
++                FAST_DISPATCH();
+ 
++            }
++            format_exc_check_arg(PyExc_UnboundLocalError,
++                UNBOUNDLOCAL_ERROR_MSG,
++                PyTuple_GetItem(co->co_varnames, oparg));
++            break;
++        }
+         PREDICTED_WITH_ARG(STORE_FAST);
+         TARGET(STORE_FAST)
+         {
+diff --git a/Python/opcode_targets.h b/Python/opcode_targets.h
+index 95eb127a15..8c29b98960 100644
+--- a/Python/opcode_targets.h
++++ b/Python/opcode_targets.h
+@@ -147,7 +147,7 @@ static void *opcode_targets[256] = {
+     &&TARGET_EXTENDED_ARG,
+     &&TARGET_SET_ADD,
+     &&TARGET_MAP_ADD,
+-    &&_unknown_opcode,
++    &&TARGET_LOAD_OTUS,
+     &&_unknown_opcode,
+     &&_unknown_opcode,
+     &&_unknown_opcode,
+diff --git a/Python/peephole.c b/Python/peephole.c
+index 11f6f8861c..fb65ba2c3a 100644
+--- a/Python/peephole.c
++++ b/Python/peephole.c
+@@ -362,6 +362,17 @@ PyCode_Optimize(PyObject *code, PyObject* consts, PyObject *names,
+         cumlc = 0;
+ 
+         switch (opcode) {
++            case LOAD_FAST:
++                j = GETARG(codestr, i);
++                // При LOAD_FAST размер opcode и параметров 3 байта, поэтому смотрим вперёд и ищем LOAD_CONST
++                if (codestr[i+3] != LOAD_CONST  ||  j != 0 || !ISBASICBLOCK(blocks,i,6) ) continue;
++                // Заменим на наш opcod
++                codestr[i+3] = LOAD_OTUS;
++                // Всё что было до него заполним "нулями" (нет операции)
++                codestr[i] = NOP;
++                codestr[i+1] = NOP;
++                codestr[i+2] = NOP;
++                break;
+             /* Replace UNARY_NOT POP_JUMP_IF_FALSE
+                with    POP_JUMP_IF_TRUE */
+             case UNARY_NOT:
+-- 
+2.11.0
+
